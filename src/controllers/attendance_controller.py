@@ -302,7 +302,9 @@ def process_rfid_passive(card_id: str) -> PassiveTapResult:
         today_date: str = date.today().isoformat()           # 'YYYY-MM-DD'
         today_day: str  = _english_weekday(datetime.now())   # 'Monday' … 'Sunday'
 
-        sections_today = section_model.get_sections_for_student_on_day(student_id, today_day)
+        # Attendance is taken on ANY day the program is used (no weekday
+        # restriction): every enrolled section gets a session for today's date.
+        sections_today = all_enrolled
 
         if not sections_today:
             attended, total_sessions = attendance_model.get_student_attendance_summary(student_id)
@@ -509,7 +511,8 @@ def get_daily_report(date_str: str) -> dict:
         today_day = ""
 
     with _gc() as conn:
-        # Active students enrolled in sections whose day matches today
+        # Active students enrolled in sections that held a session on this date
+        # (attendance can be taken on any weekday, so match on session date).
         enrolled_rows = conn.execute(
             """
             SELECT DISTINCT s.id,
@@ -518,10 +521,11 @@ def get_daily_report(date_str: str) -> dict:
             FROM   students s
             JOIN   student_sections ss ON ss.student_id  = s.id
             JOIN   sections         sec ON sec.id         = ss.section_id
-            WHERE  sec.day      = ?
-              AND  s.is_inactive = 0;
+            WHERE  s.is_inactive = 0
+              AND  EXISTS (SELECT 1 FROM sessions x
+                           WHERE x.section_id = sec.id AND x.date = ?);
             """,
-            (today_day,),
+            (date_str,),
         ).fetchall()
 
         # Present records today (any section)
@@ -763,7 +767,203 @@ def push_summary_to_sheets(spreadsheet_url: str) -> tuple[bool, str]:
             f"{len(section_names_ordered)} section columns to Attendance Summary"
         )
         log_info(f"push_summary_to_sheets: {info}")
+
+        # ── Daily per-date grid (per-section blocks) ─────────────────────
+        ok_daily, daily_info = _push_daily_attendance_grid(sh, gspread)
+        info += f"; {daily_info}" if ok_daily else f"; Daily Attendance failed: {daily_info}"
         return True, info
     except Exception as exc:
         log_error(f"push_summary_to_sheets: {exc}")
+        return False, str(exc)
+
+
+# ── Daily attendance grid (Google Sheets) ─────────────────────────────────────
+
+_TR_DAYS_SHORT = ["Pzt", "Sal", "Çar", "Per", "Cum", "Cmt", "Paz"]
+
+#: Students with this many consecutive absences (anywhere in history) are flagged red.
+CONSECUTIVE_ABSENCE_LIMIT = 2
+#: Students with this many total absences are flagged red.
+TOTAL_ABSENCE_LIMIT = 3
+
+
+def build_daily_attendance_blocks() -> list[dict]:
+    """
+    Build per-section day-by-day attendance data.
+
+    Returns a list (one per section that has at least one session) of dicts:
+        section_name, section_day, section_time,
+        dates: list[str] (ISO, oldest first),
+        students: list of {
+            first_name, last_name,
+            marks: list[bool]  (True = present, aligned with ``dates``),
+            absent, present, max_consecutive_absent,
+            flagged: bool
+        }
+    A missing record on a session date counts as absent.
+    """
+    import controllers.report_controller as report_ctrl
+
+    blocks: list[dict] = []
+    for sec in section_model.get_all_sections():
+        rep = report_ctrl.get_full_section_report(sec["id"])
+        dates = sorted(rep["session_dates"])
+        if not dates:
+            continue
+        students = []
+        for stu in rep["students"]:
+            marks = [stu["records"].get(d) == "Present" for d in dates]
+            run = best = 0
+            for m in marks:
+                run = 0 if m else run + 1
+                best = max(best, run)
+            absent = marks.count(False)
+            students.append({
+                "first_name": stu["first_name"],
+                "last_name": stu["last_name"],
+                "marks": marks,
+                "absent": absent,
+                "present": len(marks) - absent,
+                "max_consecutive_absent": best,
+                "flagged": best >= CONSECUTIVE_ABSENCE_LIMIT
+                           or absent >= TOTAL_ABSENCE_LIMIT,
+            })
+        blocks.append({
+            "section_name": sec["name"],
+            "section_day": sec["day"],
+            "section_time": sec["time"] or "",
+            "dates": dates,
+            "students": students,
+        })
+    return blocks
+
+
+def _push_daily_attendance_grid(sh, gspread) -> tuple[bool, str]:  # type: ignore[no-untyped-def]
+    """
+    Write the 'Daily Attendance' worksheet: one block per section, separated
+    by blank rows. Each block has one column per session date (✓ / ✗) and
+    ends with total absent / present columns. Students reaching
+    CONSECUTIVE_ABSENCE_LIMIT consecutive or TOTAL_ABSENCE_LIMIT total
+    absences are highlighted red.
+    """
+    from gspread.utils import rowcol_to_a1
+
+    try:
+        blocks = build_daily_attendance_blocks()
+        title = "Daily Attendance"
+        try:
+            ws = sh.worksheet(title)
+            ws.clear()
+            # Reset previous formatting
+            sh.batch_update({"requests": [{"repeatCell": {
+                "range": {"sheetId": ws.id},
+                "cell": {"userEnteredFormat": {}},
+                "fields": "userEnteredFormat",
+            }}]})
+        except gspread.exceptions.WorksheetNotFound:
+            ws = sh.add_worksheet(title=title, rows=1000, cols=60)
+
+        RED_BG    = {"red": 0.96, "green": 0.36, "blue": 0.36}
+        LIGHT_RED = {"red": 0.99, "green": 0.85, "blue": 0.85}
+        GREEN_FG  = {"red": 0.09, "green": 0.40, "blue": 0.20}
+        HEADER_BG = {"red": 0.06, "green": 0.30, "blue": 0.46}
+        TITLE_BG  = {"red": 0.85, "green": 0.90, "blue": 0.98}
+        WHITE     = {"red": 1, "green": 1, "blue": 1}
+
+        rows: list[list] = []
+        formats: list[dict] = []
+        max_cols = 1
+
+        def rng(r1: int, c1: int, r2: int, c2: int) -> str:
+            return f"{rowcol_to_a1(r1, c1)}:{rowcol_to_a1(r2, c2)}"
+
+        for block in blocks:
+            dates = block["dates"]
+            ncols = 2 + len(dates) + 2
+            max_cols = max(max_cols, ncols)
+
+            # Title row
+            rows.append([
+                f"{block['section_name']}  ({block['section_day']} {block['section_time']})".strip()
+            ])
+            r = len(rows)
+            formats.append({"range": rng(r, 1, r, ncols), "format": {
+                "backgroundColor": TITLE_BG,
+                "textFormat": {"bold": True, "fontSize": 12},
+            }})
+
+            # Header row
+            date_labels = []
+            for d in dates:
+                dt = datetime.strptime(d, "%Y-%m-%d")
+                date_labels.append(f"{dt.strftime('%d.%m.%Y')} {_TR_DAYS_SHORT[dt.weekday()]}")
+            rows.append(["Ad", "Soyad", *date_labels, "Gelmediği Gün", "Geldiği Gün"])
+            r = len(rows)
+            formats.append({"range": rng(r, 1, r, ncols), "format": {
+                "backgroundColor": HEADER_BG,
+                "horizontalAlignment": "CENTER",
+                "textFormat": {"bold": True, "foregroundColor": WHITE},
+            }})
+
+            # Student rows
+            for stu in block["students"]:
+                rows.append([
+                    stu["first_name"], stu["last_name"],
+                    *["✓" if m else "✗" for m in stu["marks"]],
+                    stu["absent"], stu["present"],
+                ])
+                r = len(rows)
+                formats.append({"range": rng(r, 3, r, ncols), "format": {
+                    "horizontalAlignment": "CENTER",
+                }})
+                # Absent cells: light red; cells in a consecutive run: strong red
+                marks = stu["marks"]
+                for j, m in enumerate(marks):
+                    if m:
+                        continue
+                    in_run = (j > 0 and not marks[j - 1]) or (
+                        j + 1 < len(marks) and not marks[j + 1]
+                    )
+                    c = 3 + j
+                    formats.append({"range": rng(r, c, r, c), "format": {
+                        "backgroundColor": RED_BG if in_run else LIGHT_RED,
+                    }})
+                if stu["flagged"]:
+                    formats.append({"range": rng(r, 1, r, 2), "format": {
+                        "backgroundColor": RED_BG,
+                        "textFormat": {"bold": True, "foregroundColor": WHITE},
+                    }})
+                    formats.append({"range": rng(r, ncols - 1, r, ncols - 1), "format": {
+                        "backgroundColor": RED_BG,
+                        "textFormat": {"bold": True, "foregroundColor": WHITE},
+                    }})
+                else:
+                    formats.append({"range": rng(r, ncols, r, ncols), "format": {
+                        "textFormat": {"foregroundColor": GREEN_FG},
+                    }})
+
+            # Blank separator rows between sections
+            rows.append([])
+            rows.append([])
+
+        if not rows:
+            return True, "Daily Attendance: no sessions yet"
+
+        if ws.col_count < max_cols:
+            ws.resize(cols=max_cols)
+        if ws.row_count < len(rows):
+            ws.resize(rows=len(rows) + 10)
+
+        ws.update(rows, "A1")
+        if formats:
+            ws.batch_format(formats)
+        try:
+            ws.freeze(cols=2)
+        except Exception:
+            pass
+        info = f"Daily Attendance: {len(blocks)} section block(s)"
+        log_info(f"_push_daily_attendance_grid: {info}")
+        return True, info
+    except Exception as exc:
+        log_error(f"_push_daily_attendance_grid: {exc}")
         return False, str(exc)

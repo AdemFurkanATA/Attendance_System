@@ -193,13 +193,9 @@ class AttendanceTab(ctk.CTkFrame):
         return date.today().isoformat()
 
     def _refresh_today_sections(self) -> None:
-        """Update the sections info bar with sections scheduled for today."""
+        """Update the sections info bar. Attendance is taken on any day for all sections."""
         today_day = _english_weekday(datetime.now())
-        all_secs  = section_ctrl.get_all_sections()
-        today_secs = [
-            s for s in all_secs
-            if s["day"].strip().lower() == today_day.lower()
-        ]
+        today_secs = section_ctrl.get_all_sections()
         if today_secs:
             names = ",  ".join(
                 f"{s['name']} ({s['time']})" for s in today_secs
@@ -568,15 +564,8 @@ class AttendanceTab(ctk.CTkFrame):
         self._app.wait_window(dlg)
 
         if dlg.confirmed and dlg.section_ids:
-            # Determine which selected sections are scheduled today
-            today_day = _english_weekday(_dt.now())
-            all_secs = section_ctrl.get_all_sections()
-            today_section_ids = {
-                s["id"] for s in all_secs
-                if s["day"].strip().lower() == today_day.lower()
-            }
-            # Only mark present for sections that are both selected AND today
-            mark_ids = [sid_ for sid_ in dlg.section_ids if sid_ in today_section_ids]
+            # Attendance is taken on any day — mark all selected sections for today's date
+            mark_ids = list(dlg.section_ids)
 
             if mark_ids:
                 marked = attendance_ctrl.mark_present_for_enrolled_sections(
@@ -618,14 +607,8 @@ class AttendanceTab(ctk.CTkFrame):
         self._app.wait_window(dlg)
 
         if dlg.confirmed and dlg.section_ids:
-            # Only mark present for sections scheduled today
-            today_day = _english_weekday(datetime.now())
-            all_secs = section_ctrl.get_all_sections()
-            today_ids = {
-                s["id"] for s in all_secs
-                if s["day"].strip().lower() == today_day.lower()
-            }
-            mark_ids = [sid for sid in dlg.section_ids if sid in today_ids]
+            # Attendance is taken on any day — mark all selected sections for today's date
+            mark_ids = list(dlg.section_ids)
 
             if mark_ids:
                 marked = attendance_ctrl.mark_present_for_enrolled_sections(
@@ -657,14 +640,8 @@ class AttendanceTab(ctk.CTkFrame):
         self._app.wait_window(dlg)
 
         if dlg.student_id is not None:
-            # Only mark present for sections scheduled today
-            today_day = _english_weekday(datetime.now())
-            all_secs = section_ctrl.get_all_sections()
-            today_ids = {
-                s["id"] for s in all_secs
-                if s["day"].strip().lower() == today_day.lower()
-            }
-            mark_ids = [sid for sid in dlg.section_ids if sid in today_ids]
+            # Attendance is taken on any day — mark all selected sections for today's date
+            mark_ids = list(dlg.section_ids)
 
             if mark_ids:
                 marked = attendance_ctrl.mark_present_for_enrolled_sections(

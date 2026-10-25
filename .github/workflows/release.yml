@@ -1,0 +1,56 @@
+name: Build & Release EXE
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt pyinstaller
+
+      - name: Build executable
+        run: >
+          pyinstaller --noconfirm --onefile --noconsole
+          --name AttendanceSystem
+          --paths src
+          --collect-all customtkinter
+          --collect-all tkcalendar
+          --hidden-import babel.numbers
+          src/main.py
+
+      - name: Create GitHub Release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/AttendanceSystem.exe
+          generate_release_notes: true
+          body: |
+            ## İndirme
+            Aşağıdan **AttendanceSystem.exe** dosyasını indirip çift tıklayın — kurulum gerekmez.
+
+            ## Yenilikler
+            - Yoklama artık programın açıldığı **her gün** alınır (section günü kısıtı kaldırıldı).
+            - Google Sheets'e **Daily Attendance** sayfası eklendi: section bazlı bloklar, her tarih için ✓/✗,
+              toplam gelmediği/geldiği gün, arka arkaya 2 veya toplam 3 devamsızlık kırmızı ile işaretlenir.
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: AttendanceSystem
+          path: dist/AttendanceSystem.exe
