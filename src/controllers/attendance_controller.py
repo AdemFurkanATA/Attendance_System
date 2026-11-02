@@ -785,6 +785,9 @@ _TR_DAYS_SHORT = ["Pzt", "Sal", "Çar", "Per", "Cum", "Cmt", "Paz"]
 CONSECUTIVE_ABSENCE_LIMIT = 2
 #: Students with this many total absences are flagged red.
 TOTAL_ABSENCE_LIMIT = 3
+#: Absences within this many days of a section's first session are ignored
+#: for red flagging (registration / add-drop period).
+GRACE_PERIOD_DAYS = 14
 
 
 def build_daily_attendance_blocks() -> list[dict]:
@@ -794,15 +797,18 @@ def build_daily_attendance_blocks() -> list[dict]:
     Returns a list (one per section that has at least one session) of dicts:
         section_name, section_day, section_time,
         dates: list[str] (ISO, oldest first),
+        grace: list[bool] (True = date falls in the first GRACE_PERIOD_DAYS),
+        present_counts: list[int] (students present per date),
         students: list of {
             first_name, last_name,
             marks: list[bool]  (True = present, aligned with ``dates``),
             absent, present, max_consecutive_absent,
-            flagged: bool
+            flagged: bool  (computed ignoring grace-period dates)
         }
     A missing record on a session date counts as absent.
     """
     import controllers.report_controller as report_ctrl
+    from datetime import timedelta
 
     blocks: list[dict] = []
     for sec in section_model.get_all_sections():
@@ -810,14 +816,24 @@ def build_daily_attendance_blocks() -> list[dict]:
         dates = sorted(rep["session_dates"])
         if not dates:
             continue
+        first = datetime.strptime(dates[0], "%Y-%m-%d")
+        grace_end = first + timedelta(days=GRACE_PERIOD_DAYS)
+        grace = [datetime.strptime(d, "%Y-%m-%d") < grace_end for d in dates]
+        present_counts = [0] * len(dates)
         students = []
         for stu in rep["students"]:
             marks = [stu["records"].get(d) == "Present" for d in dates]
+            for j, m in enumerate(marks):
+                if m:
+                    present_counts[j] += 1
+            # Flag computation ignores grace-period dates
+            counted = [m for m, g in zip(marks, grace) if not g]
             run = best = 0
-            for m in marks:
+            for m in counted:
                 run = 0 if m else run + 1
                 best = max(best, run)
             absent = marks.count(False)
+            counted_absent = counted.count(False)
             students.append({
                 "first_name": stu["first_name"],
                 "last_name": stu["last_name"],
@@ -826,13 +842,15 @@ def build_daily_attendance_blocks() -> list[dict]:
                 "present": len(marks) - absent,
                 "max_consecutive_absent": best,
                 "flagged": best >= CONSECUTIVE_ABSENCE_LIMIT
-                           or absent >= TOTAL_ABSENCE_LIMIT,
+                           or counted_absent >= TOTAL_ABSENCE_LIMIT,
             })
         blocks.append({
             "section_name": sec["name"],
             "section_day": sec["day"],
             "section_time": sec["time"] or "",
             "dates": dates,
+            "grace": grace,
+            "present_counts": present_counts,
             "students": students,
         })
     return blocks
@@ -869,6 +887,7 @@ def _push_daily_attendance_grid(sh, gspread) -> tuple[bool, str]:  # type: ignor
         HEADER_BG = {"red": 0.06, "green": 0.30, "blue": 0.46}
         TITLE_BG  = {"red": 0.85, "green": 0.90, "blue": 0.98}
         WHITE     = {"red": 1, "green": 1, "blue": 1}
+        GREY_BG   = {"red": 0.90, "green": 0.90, "blue": 0.90}
 
         rows: list[list] = []
         formats: list[dict] = []
@@ -884,7 +903,8 @@ def _push_daily_attendance_grid(sh, gspread) -> tuple[bool, str]:  # type: ignor
 
             # Title row
             rows.append([
-                f"{block['section_name']}  ({block['section_day']} {block['section_time']})".strip()
+                f"{block['section_name']}  ({block['section_day']} {block['section_time']})"
+                f"  —  {len(block['students'])} kayıtlı öğrenci"
             ])
             r = len(rows)
             formats.append({"range": rng(r, 1, r, ncols), "format": {
@@ -916,15 +936,22 @@ def _push_daily_attendance_grid(sh, gspread) -> tuple[bool, str]:  # type: ignor
                 formats.append({"range": rng(r, 3, r, ncols), "format": {
                     "horizontalAlignment": "CENTER",
                 }})
-                # Absent cells: light red; cells in a consecutive run: strong red
+                # Absent cells: light red; cells in a consecutive run: strong red.
+                # Grace-period (first 2 weeks) absences are shown grey, not red.
                 marks = stu["marks"]
+                grace = block["grace"]
                 for j, m in enumerate(marks):
                     if m:
                         continue
-                    in_run = (j > 0 and not marks[j - 1]) or (
+                    c = 3 + j
+                    if grace[j]:
+                        formats.append({"range": rng(r, c, r, c), "format": {
+                            "backgroundColor": GREY_BG,
+                        }})
+                        continue
+                    in_run = (j > 0 and not marks[j - 1] and not grace[j - 1]) or (
                         j + 1 < len(marks) and not marks[j + 1]
                     )
-                    c = 3 + j
                     formats.append({"range": rng(r, c, r, c), "format": {
                         "backgroundColor": RED_BG if in_run else LIGHT_RED,
                     }})
@@ -941,6 +968,19 @@ def _push_daily_attendance_grid(sh, gspread) -> tuple[bool, str]:  # type: ignor
                     formats.append({"range": rng(r, ncols, r, ncols), "format": {
                         "textFormat": {"foregroundColor": GREEN_FG},
                     }})
+
+            # Per-date attendance count row
+            total_students = len(block["students"])
+            rows.append([
+                "Gelen Kişi", "",
+                *[f"{n}/{total_students}" for n in block["present_counts"]],
+            ])
+            r = len(rows)
+            formats.append({"range": rng(r, 1, r, ncols), "format": {
+                "backgroundColor": TITLE_BG,
+                "horizontalAlignment": "CENTER",
+                "textFormat": {"bold": True},
+            }})
 
             # Blank separator rows between sections
             rows.append([])

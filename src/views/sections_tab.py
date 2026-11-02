@@ -269,12 +269,22 @@ class SectionsTab(ctk.CTkFrame):
             messagebox.showerror("Error", msg, parent=self._app)
 
     def _show_section_students(self, section_id: int, section_name: str) -> None:
-        """Open a popup listing students enrolled in the given section."""
+        """Open a popup listing enrolled students with quick per-date attendance toggles.
+
+        A date picker selects the day; each student row has a button that
+        cycles No record → Var (Present) → Yok (Absent) → Var … and saves
+        immediately via the attendance controller.
+        """
+        import controllers.attendance_controller as attendance_ctrl
+        import controllers.report_controller as report_ctrl
+        from datetime import date as _date
+        from tkcalendar import DateEntry
+
         students = section_ctrl.get_enrolled_students(section_id)
 
         dlg = ctk.CTkToplevel(self._app)
         dlg.title(f"Students — {section_name}")
-        dlg.geometry("420x480")
+        dlg.geometry("520x600")
         dlg.transient(self._app)
         dlg.grab_set()
         dlg.resizable(False, True)
@@ -284,22 +294,86 @@ class SectionsTab(ctk.CTkFrame):
             font=ctk.CTkFont(size=15, weight="bold"),
         ).pack(pady=(12, 6))
 
+        # ── Date picker + summary ───────────────────────────────────────
+        top = ctk.CTkFrame(dlg, fg_color="transparent")
+        top.pack(fill="x", padx=10, pady=(0, 6))
+        ctk.CTkLabel(top, text="Tarih:", font=ctk.CTkFont(size=13)).pack(side="left", padx=(4, 6))
+        date_entry = DateEntry(
+            top, date_pattern="yyyy-mm-dd", locale="tr_TR", width=12,
+            background="#1f6aa5", foreground="white", borderwidth=1,
+        )
+        date_entry.set_date(_date.today())
+        date_entry.pack(side="left")
+        summary_lbl = ctk.CTkLabel(top, text="", text_color="#9ca3af",
+                                   font=ctk.CTkFont(size=12))
+        summary_lbl.pack(side="right", padx=6)
+
         scroll = ctk.CTkScrollableFrame(dlg, fg_color="#1e1e2e")
         scroll.pack(fill="both", expand=True, padx=10, pady=(0, 10))
+
+        _STYLE = {
+            "Present": ("✓  Var", "#15803d", "#166534"),
+            "Absent":  ("✗  Yok", "#b91c1c", "#991b1b"),
+            None:      ("—  Kayıt yok", "#4b5563", "#374151"),
+        }
+        status_by_student: dict[int, Optional[str]] = {}
+        buttons: dict[int, ctk.CTkButton] = {}
+
+        def _style_btn(stu_id: int) -> None:
+            text, fg, hover = _STYLE[status_by_student.get(stu_id)]
+            buttons[stu_id].configure(text=text, fg_color=fg, hover_color=hover)
+
+        def _update_summary() -> None:
+            present = sum(1 for s in status_by_student.values() if s == "Present")
+            summary_lbl.configure(text=f"Gelen: {present}/{len(students)}")
+
+        def _selected_date() -> str:
+            return date_entry.get_date().isoformat()
+
+        def _toggle(stu_id: int) -> None:
+            new_status = "Absent" if status_by_student.get(stu_id) == "Present" else "Present"
+            ok, msg = attendance_ctrl.set_student_attendance(
+                stu_id, section_id, _selected_date(), new_status
+            )
+            if not ok:
+                messagebox.showerror("Error", msg, parent=dlg)
+                return
+            status_by_student[stu_id] = new_status
+            _style_btn(stu_id)
+            _update_summary()
+
+        def _load_statuses(_event: object = None) -> None:
+            status_by_student.clear()
+            try:
+                rep = report_ctrl.get_daily_section_report(section_id, _selected_date())
+                for r in rep["students"]:
+                    st_ = r["status"]
+                    status_by_student[r["student_id"]] = st_ if st_ in ("Present", "Absent") else None
+            except Exception as exc:  # noqa: BLE001
+                messagebox.showerror("Error", str(exc), parent=dlg)
+            for sid_ in buttons:
+                _style_btn(sid_)
+            _update_summary()
 
         if not students:
             ctk.CTkLabel(scroll, text="No students enrolled.", text_color="#9ca3af").pack(pady=20)
         else:
             for idx, st in enumerate(students):
                 bg = "#2a2a3c" if idx % 2 == 0 else "#1e1e2e"
-                row = ctk.CTkFrame(scroll, fg_color=bg, height=32)
+                row = ctk.CTkFrame(scroll, fg_color=bg, height=36)
                 row.pack(fill="x", pady=1)
                 name = f"{st['first_name']} {st['last_name']}"
-                card = st["card_id"] or "—"
-                ctk.CTkLabel(row, text=name, width=240, anchor="w",
+                ctk.CTkLabel(row, text=name, width=260, anchor="w",
                              font=ctk.CTkFont(size=13)).pack(side="left", padx=8)
-                ctk.CTkLabel(row, text=card, width=120, anchor="e",
-                             text_color="#9ca3af", font=ctk.CTkFont(size=12)).pack(side="right", padx=8)
+                btn = ctk.CTkButton(
+                    row, width=120, height=28,
+                    command=lambda sid_=st["id"]: _toggle(sid_),
+                )
+                btn.pack(side="right", padx=8, pady=4)
+                buttons[st["id"]] = btn
+
+        date_entry.bind("<<DateEntrySelected>>", _load_statuses)
+        _load_statuses()
 
         ctk.CTkButton(dlg, text="Close", width=100, command=dlg.destroy).pack(pady=(4, 12))
 

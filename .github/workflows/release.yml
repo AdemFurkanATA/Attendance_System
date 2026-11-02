@@ -32,6 +32,7 @@ jobs:
           --collect-all customtkinter
           --collect-all tkcalendar
           --hidden-import babel.numbers
+          --collect-data babel
           src/main.py
 
       - name: Create GitHub Release
@@ -45,9 +46,10 @@ jobs:
             Aşağıdan **AttendanceSystem.exe** dosyasını indirip çift tıklayın — kurulum gerekmez.
 
             ## Yenilikler
-            - Yoklama artık programın açıldığı **her gün** alınır (section günü kısıtı kaldırıldı).
-            - Google Sheets'e **Daily Attendance** sayfası eklendi: section bazlı bloklar, her tarih için ✓/✗,
-              toplam gelmediği/geldiği gün, arka arkaya 2 veya toplam 3 devamsızlık kırmızı ile işaretlenir.
+            - Sections → Students: tarih seçici ve tek tıkla **Var / Yok** değiştirme butonu.
+            - Kırmızı işaretlemede her section'ın **ilk 2 haftasındaki** devamsızlıklar sayılmaz (gri gösterilir).
+            - Daily Attendance sayfasında her section için **"Gelen Kişi"** satırı (her tarih için gelen/kayıtlı).
+            - Yoklama programın açıldığı **her gün** alınır.
 
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
