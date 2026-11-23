@@ -835,10 +835,13 @@ def build_daily_attendance_blocks() -> list[dict]:
             absent = marks.count(False)
             counted_absent = counted.count(False)
             students.append({
+                "student_id": stu["student_id"],
                 "first_name": stu["first_name"],
                 "last_name": stu["last_name"],
                 "marks": marks,
                 "absent": absent,
+                "counted_absent": counted_absent,
+                "trailing_absent": run,
                 "present": len(marks) - absent,
                 "max_consecutive_absent": best,
                 "flagged": best >= CONSECUTIVE_ABSENCE_LIMIT
@@ -854,6 +857,36 @@ def build_daily_attendance_blocks() -> list[dict]:
             "students": students,
         })
     return blocks
+
+
+def get_student_risk_levels() -> dict[int, str]:
+    """
+    Return {student_id: 'red' | 'yellow' | 'green'} using the same rules as
+    the Google Sheets export (grace period ignored):
+
+    * red    — CONSECUTIVE_ABSENCE_LIMIT in a row, or TOTAL_ABSENCE_LIMIT total.
+    * yellow — one step away: currently missed the latest session(s), or one
+               absence short of the total limit.
+    * green  — otherwise.
+
+    Students with no sessions at all are not in the dict (no data).
+    The worst level across a student's sections wins.
+    """
+    order = {"green": 0, "yellow": 1, "red": 2}
+    result: dict[int, str] = {}
+    for block in build_daily_attendance_blocks():
+        for stu in block["students"]:
+            if stu["flagged"]:
+                level = "red"
+            elif (stu["trailing_absent"] >= 1
+                  or stu["counted_absent"] >= TOTAL_ABSENCE_LIMIT - 1):
+                level = "yellow"
+            else:
+                level = "green"
+            sid = stu["student_id"]
+            if sid not in result or order[level] > order[result[sid]]:
+                result[sid] = level
+    return result
 
 
 def _push_daily_attendance_grid(sh, gspread) -> tuple[bool, str]:  # type: ignore[no-untyped-def]

@@ -17,6 +17,7 @@ import customtkinter as ctk
 from tkinter import messagebox
 
 import controllers.student_controller as student_ctrl
+import controllers.attendance_controller as attendance_ctrl
 from views.dialogs.student_edit_dialog import StudentEditDialog
 from views.dialogs.manual_attendance_dialog import ManualAttendanceDialog
 from utils.logger import log_info, log_warning
@@ -46,6 +47,7 @@ class StudentsTab(ctk.CTkFrame):
         self._visible_count: int = 0          # how many rows currently rendered
 
         self._selected_ids: set[int] = set()
+        self._risk: dict[int, str] = {}
         self._row_checks: dict[int, ctk.CTkCheckBox] = {}
         self._sort_key: str = "full_name"
         self._sort_asc: bool = True
@@ -128,6 +130,12 @@ class StudentsTab(ctk.CTkFrame):
             command=self._apply_filter,
         ).pack(side="left")
 
+        ctk.CTkLabel(
+            filter_frame,
+            text="  🟢 sorun yok   🟡 riskli   🔴 2 üst üste veya 3 toplam devamsızlık",
+            font=ctk.CTkFont(size=11), text_color="#9ca3af",
+        ).pack(side="left", padx=(16, 0))
+
         self._delete_sel_btn = ctk.CTkButton(
             filter_frame, text="Delete Selected (0)", width=170, height=30,
             fg_color="#7f1d1d", hover_color="#991b1b",
@@ -205,6 +213,11 @@ class StudentsTab(ctk.CTkFrame):
         self._section_filter.configure(values=["All Sections"] + section_names)
 
         self._selected_ids &= {r["id"] for r in raw}
+        try:
+            self._risk = attendance_ctrl.get_student_risk_levels()
+        except Exception as exc:
+            log_warning(f"StudentsTab: risk levels failed — {exc}")
+            self._risk = {}
         self._apply_filter()
         self._update_delete_btn()
 
@@ -348,7 +361,12 @@ class StudentsTab(ctk.CTkFrame):
 
         # Attendance %
         pct_text  = row_data.get("attendance_pct", "—")
-        pct_color = "#4ade80" if not is_inactive else "#f87171"
+        level = self._risk.get(row_data["id"])
+        pct_color = {
+            "green": "#4ade80",     # OK
+            "yellow": "#facc15",    # at risk
+            "red": "#f87171",       # candidate for removal
+        }.get(level, "#6b7280")     # no data yet
         ctk.CTkLabel(
             row, text=pct_text,
             font=ctk.CTkFont(size=12, weight="bold"), text_color=pct_color,

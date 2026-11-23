@@ -48,6 +48,7 @@ jobs:
             ## Yenilikler
             - Admin Panel → Students: onay kutularıyla **toplu öğrenci silme** ("Select all" + "Delete Selected").
             - Students satırlarındaki sütun genişlikleri düzeltildi; **Edit** butonu artık tam görünüyor.
+            - Students sayfasında yüzde sütunu **kırmızı / sarı / yeşil**: 2 üst üste veya 3 toplam devamsızlık = kırmızı, riskli = sarı, sorun yok = yeşil.
 
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
