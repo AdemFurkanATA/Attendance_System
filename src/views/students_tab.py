@@ -25,10 +25,10 @@ from utils.localization import turkish_lower
 
 # Column definitions: (header label, dict key, display width)
 _COLUMNS: list[tuple[str, str, int]] = [
-    ("Name",         "full_name",      260),
-    ("RFID",         "card_id",        200),
-    ("Sections",     "sections",       280),
-    ("Attendance %", "attendance_pct", 110),
+    ("Name",         "full_name",      190),
+    ("RFID",         "card_id",        140),
+    ("Sections",     "sections",       190),
+    ("Attendance %", "attendance_pct",  90),
 ]
 
 
@@ -45,6 +45,8 @@ class StudentsTab(ctk.CTkFrame):
         self._display_rows: list[dict] = []   # after search + sort
         self._visible_count: int = 0          # how many rows currently rendered
 
+        self._selected_ids: set[int] = set()
+        self._row_checks: dict[int, ctk.CTkCheckBox] = {}
         self._sort_key: str = "full_name"
         self._sort_asc: bool = True
         self._search_var = ctk.StringVar()
@@ -126,11 +128,28 @@ class StudentsTab(ctk.CTkFrame):
             command=self._apply_filter,
         ).pack(side="left")
 
+        self._delete_sel_btn = ctk.CTkButton(
+            filter_frame, text="Delete Selected (0)", width=170, height=30,
+            fg_color="#7f1d1d", hover_color="#991b1b",
+            font=ctk.CTkFont(size=12, weight="bold"),
+            command=self._delete_selected,
+        )
+        self._delete_sel_btn.pack(side="right")
+
+        self._select_all_var = ctk.BooleanVar(value=False)
+        ctk.CTkCheckBox(
+            filter_frame, text="Select all (filtered)",
+            variable=self._select_all_var,
+            font=ctk.CTkFont(size=12), height=28,
+            command=self._toggle_select_all,
+        ).pack(side="right", padx=(0, 16))
+
         # ── Column headers ────────────────────────────────────────────────────
         self._col_hdr = ctk.CTkFrame(self, fg_color="#0f0f23", corner_radius=0)
         self._col_hdr.pack(fill="x", padx=24)
         self._col_buttons: dict[str, ctk.CTkButton] = {}
 
+        ctk.CTkLabel(self._col_hdr, text="", width=30).pack(side="left", padx=(12, 0))
         for label, key, width in _COLUMNS:
             btn = ctk.CTkButton(
                 self._col_hdr,
@@ -149,7 +168,7 @@ class StudentsTab(ctk.CTkFrame):
 
         # Spacer for action buttons column
         ctk.CTkLabel(
-            self._col_hdr, text="", width=300,
+            self._col_hdr, text="", width=250,
         ).pack(side="left", padx=4)
 
         # ── Scrollable list ───────────────────────────────────────────────────
@@ -185,7 +204,9 @@ class StudentsTab(ctk.CTkFrame):
         })
         self._section_filter.configure(values=["All Sections"] + section_names)
 
+        self._selected_ids &= {r["id"] for r in raw}
         self._apply_filter()
+        self._update_delete_btn()
 
     def _apply_filter(self) -> None:
         """Apply current search query + section filter + inactive filter + sort, then re-render."""
@@ -236,6 +257,7 @@ class StudentsTab(ctk.CTkFrame):
         for w in self._list_frame.winfo_children():
             w.destroy()
         self._visible_count = 0
+        self._row_checks.clear()
 
         if not self._display_rows:
             ctk.CTkLabel(
@@ -288,14 +310,25 @@ class StudentsTab(ctk.CTkFrame):
         )
         row.pack(fill="x", pady=2, padx=4)
 
+        # Selection checkbox
+        sid_ = row_data["id"]
+        chk = ctk.CTkCheckBox(
+            row, text="", width=24, checkbox_width=20, checkbox_height=20,
+            command=lambda i=sid_: self._on_row_check(i),
+        )
+        if sid_ in self._selected_ids:
+            chk.select()
+        chk.pack(side="left", padx=(12, 0))
+        self._row_checks[sid_] = chk
+
         # Name (+ INACTIVE badge if applicable)
         name_text = row_data["full_name"]
         name_color = "#ff6b6b" if is_inactive else "#e0e0e0"
         ctk.CTkLabel(
             row, text=name_text,
             font=ctk.CTkFont(size=13), text_color=name_color,
-            width=260, anchor="w",
-        ).pack(side="left", padx=(12, 4), pady=8)
+            width=190, anchor="w",
+        ).pack(side="left", padx=(8, 4), pady=8)
 
         # RFID
         rfid_text  = row_data["card_id"] if row_data["card_id"] else "—"
@@ -303,14 +336,14 @@ class StudentsTab(ctk.CTkFrame):
         ctk.CTkLabel(
             row, text=rfid_text,
             font=ctk.CTkFont(size=12), text_color=rfid_color,
-            width=200, anchor="w",
+            width=140, anchor="w",
         ).pack(side="left", padx=4)
 
         # Sections
         ctk.CTkLabel(
             row, text=row_data["sections"],
             font=ctk.CTkFont(size=12), text_color="#9ca3af",
-            width=280, anchor="w",
+            width=190, anchor="w",
         ).pack(side="left", padx=4)
 
         # Attendance %
@@ -319,16 +352,16 @@ class StudentsTab(ctk.CTkFrame):
         ctk.CTkLabel(
             row, text=pct_text,
             font=ctk.CTkFont(size=12, weight="bold"), text_color=pct_color,
-            width=110, anchor="w",
+            width=90, anchor="w",
         ).pack(side="left", padx=4)
 
         # Action buttons
-        btn_frame = ctk.CTkFrame(row, fg_color="transparent", width=296)
+        btn_frame = ctk.CTkFrame(row, fg_color="transparent", width=250)
         btn_frame.pack(side="right", padx=8)
         btn_frame.pack_propagate(False)
 
         ctk.CTkButton(
-            btn_frame, text="Attendance", width=94, height=32,
+            btn_frame, text="Attendance", width=92, height=32,
             fg_color="#065f46", hover_color="#047857",
             font=ctk.CTkFont(size=12),
             command=lambda sid=row_data["id"], n=row_data["full_name"]:
@@ -336,19 +369,74 @@ class StudentsTab(ctk.CTkFrame):
         ).pack(side="left", padx=(0, 4))
 
         ctk.CTkButton(
-            btn_frame, text="Edit", width=86, height=32,
+            btn_frame, text="Edit", width=70, height=32,
             fg_color="#374151", hover_color="#4b5563",
             font=ctk.CTkFont(size=12),
             command=lambda sid=row_data["id"]: self._edit_student(sid),
         ).pack(side="left", padx=(0, 4))
 
         ctk.CTkButton(
-            btn_frame, text="Delete", width=86, height=32,
+            btn_frame, text="Delete", width=70, height=32,
             fg_color="#7f1d1d", hover_color="#991b1b",
             font=ctk.CTkFont(size=12),
             command=lambda sid=row_data["id"], n=row_data["full_name"]:
                 self._delete_student(sid, n),
         ).pack(side="left")
+
+    # ──────────────────────────────────────────────────────────────────────────
+    # Bulk selection / delete
+    # ──────────────────────────────────────────────────────────────────────────
+
+    def _update_delete_btn(self) -> None:
+        self._delete_sel_btn.configure(
+            text=f"Delete Selected ({len(self._selected_ids)})"
+        )
+
+    def _on_row_check(self, student_id: int) -> None:
+        chk = self._row_checks.get(student_id)
+        if chk is not None and chk.get():
+            self._selected_ids.add(student_id)
+        else:
+            self._selected_ids.discard(student_id)
+        self._update_delete_btn()
+
+    def _toggle_select_all(self) -> None:
+        if self._select_all_var.get():
+            self._selected_ids.update(r["id"] for r in self._display_rows)
+        else:
+            self._selected_ids.difference_update(r["id"] for r in self._display_rows)
+        for sid, chk in self._row_checks.items():
+            if sid in self._selected_ids:
+                chk.select()
+            else:
+                chk.deselect()
+        self._update_delete_btn()
+
+    def _delete_selected(self) -> None:
+        ids = list(self._selected_ids)
+        if not ids:
+            messagebox.showinfo("Delete Selected", "No students selected.", parent=self._app)
+            return
+        if not messagebox.askyesno(
+            "Delete Students",
+            f"Delete {len(ids)} selected student(s)?\n\n"
+            "All their attendance records will also be permanently deleted.\n"
+            "This cannot be undone.",
+            parent=self._app,
+        ):
+            return
+        failed = 0
+        for sid in ids:
+            ok, _msg = student_ctrl.delete_student(sid)
+            if ok:
+                self._selected_ids.discard(sid)
+            else:
+                failed += 1
+        log_info(f"StudentsTab: bulk deleted {len(ids) - failed}/{len(ids)} students")
+        self._select_all_var.set(False)
+        self._load()
+        if failed:
+            messagebox.showerror("Error", f"{failed} student(s) could not be deleted.", parent=self._app)
 
     # ──────────────────────────────────────────────────────────────────────────
     # Sort helpers
