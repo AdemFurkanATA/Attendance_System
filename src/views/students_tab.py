@@ -20,7 +20,7 @@ import controllers.student_controller as student_ctrl
 import controllers.attendance_controller as attendance_ctrl
 from views.dialogs.student_edit_dialog import StudentEditDialog
 from views.dialogs.manual_attendance_dialog import ManualAttendanceDialog
-from utils.logger import log_info, log_warning
+from utils.logger import log_info, log_warning, log_error
 from utils.localization import turkish_lower
 
 
@@ -216,8 +216,13 @@ class StudentsTab(ctk.CTkFrame):
         try:
             self._risk = attendance_ctrl.get_student_risk_levels()
         except Exception as exc:
-            log_warning(f"StudentsTab: risk levels failed — {exc}")
+            log_error(f"StudentsTab: risk levels failed — {exc}")
             self._risk = {}
+            messagebox.showerror(
+                "Color levels",
+                f"Could not compute attendance colors:\n{exc}",
+                parent=self._app,
+            )
         self._apply_filter()
         self._update_delete_btn()
 
@@ -362,15 +367,17 @@ class StudentsTab(ctk.CTkFrame):
         # Attendance %
         pct_text  = row_data.get("attendance_pct", "—")
         level = self._risk.get(row_data["id"])
-        pct_color = {
-            "green": "#4ade80",     # OK
-            "yellow": "#facc15",    # at risk
-            "red": "#f87171",       # candidate for removal
-        }.get(level, "#6b7280")     # no data yet
+        badge_bg = {
+            "green": "#16a34a",     # OK
+            "yellow": "#eab308",    # at risk
+            "red": "#dc2626",       # candidate for removal
+        }.get(level, "#374151")     # no data yet
+        badge_fg = "#111827" if level == "yellow" else "#ffffff"
         ctk.CTkLabel(
             row, text=pct_text,
-            font=ctk.CTkFont(size=12, weight="bold"), text_color=pct_color,
-            width=90, anchor="w",
+            font=ctk.CTkFont(size=12, weight="bold"),
+            text_color=badge_fg, fg_color=badge_bg, corner_radius=6,
+            width=80, height=26, anchor="center",
         ).pack(side="left", padx=4)
 
         # Action buttons
