@@ -861,12 +861,17 @@ def build_daily_attendance_blocks() -> list[dict]:
 
 def get_student_risk_levels() -> dict[int, str]:
     """
-    Return {student_id: 'red' | 'yellow' | 'green'} using the same rules as
-    the Google Sheets export (grace period ignored):
+    Return {student_id: 'red' | 'yellow' | 'green'} based on the club's
+    absence rules (2 consecutive or 3 total absences after the 14-day grace
+    period, plus never-attended / grace-period guards so 0% students are
+    never shown green):
 
-    * red    — CONSECUTIVE_ABSENCE_LIMIT in a row, or TOTAL_ABSENCE_LIMIT total.
-    * yellow — one step away: currently missed the latest session(s), or one
-               absence short of the total limit.
+    * red    — flagged (2 consecutive or 3 total post-grace absences), OR
+               0% attendance with at least CONSECUTIVE_ABSENCE_LIMIT missed
+               sessions (never showed up at all).
+    * yellow — missed the latest post-grace session, OR 1 absence short of
+               the total limit, OR 0% attendance (1 missed session so far),
+               OR missed the latest session while still in the grace period.
     * green  — otherwise.
 
     Students with no sessions at all are not in the dict (no data).
@@ -876,13 +881,23 @@ def get_student_risk_levels() -> dict[int, str]:
     result: dict[int, str] = {}
     for block in build_daily_attendance_blocks():
         for stu in block["students"]:
-            if stu["flagged"]:
+            marks = stu["marks"]
+            present = stu["present"]
+            absent = stu["absent"]
+            has_post_grace = any(not g for g in block["grace"])
+
+            if stu["flagged"] or (present == 0 and absent >= CONSECUTIVE_ABSENCE_LIMIT):
                 level = "red"
-            elif (stu["trailing_absent"] >= 1
-                  or stu["counted_absent"] >= TOTAL_ABSENCE_LIMIT - 1):
+            elif (
+                stu["trailing_absent"] >= 1
+                or stu["counted_absent"] >= TOTAL_ABSENCE_LIMIT - 1
+                or (present == 0 and absent >= 1)
+                or (not has_post_grace and marks and not marks[-1])
+            ):
                 level = "yellow"
             else:
                 level = "green"
+
             sid = stu["student_id"]
             if sid not in result or order[level] > order[result[sid]]:
                 result[sid] = level
